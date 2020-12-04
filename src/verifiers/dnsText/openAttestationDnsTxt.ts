@@ -1,5 +1,5 @@
 import { getData, v2, v3, WrappedDocument, utils as oaUtils } from "@govtechsg/open-attestation";
-import { getDocumentStoreRecords } from "@govtechsg/dnsprove";
+import { getDocumentStoreRecords } from "@worldcertscom/dnsprove";
 import { getDefaultProvider } from "ethers";
 import { VerificationFragmentType, VerificationManagerOptions, Verifier } from "../../types/core";
 import { OpenAttestationDnsTxtCode } from "../../types/error";
@@ -26,7 +26,7 @@ const resolveIssuerIdentity = async (
     (record) =>
       record.addr.toLowerCase() === smartContractAddress.toLowerCase() &&
       record.netId === network.chainId.toString(10) &&
-      record.type === "openatts" &&
+      record.type === "worldatts" &&
       record.net === "ethereum"
   );
   return matchingRecord

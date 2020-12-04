@@ -1,20 +1,18 @@
-# @govtechsg/oa-verify
-
-[![CircleCI](https://circleci.com/gh/Open-Attestation/oa-verify.svg?style=svg)](https://circleci.com/gh/Open-Attestation/oa-verify)
+# @worldcertscom/oa-verify
 
 Library to verify any [OpenAttestation](https://github.com/Open-Attestation/open-attestation) document. This library implements [the verifier ADR](https://github.com/Open-Attestation/adr/blob/master/verifier.md).
 
 ## Installation
 
 ```sh
-npm install @govtechsg/oa-verify
+npm install @worldcertscom/oa-verify
 ```
 
 ## Usage
 
 ```typescript
 import { documentRopstenValidWithToken } from "./test/fixtures/v2/documentRopstenValidWithToken";
-import { verify, isValid } from "@govtechsg/oa-verify";
+import { verify, isValid } from "@worldcertscom/oa-verify";
 
 const fragments = await verify(documentRopstenValidWithToken, { network: "ropsten" });
 console.log(fragments); // see below
@@ -98,14 +96,14 @@ All those verifiers are exported as `openAttestationVerifiers`
 You can build your own verify method or you own verifiers:
 
 ```typescript
-import { verificationBuilder, openAttestationVerifiers } from "@govtechsg/oa-verify";
+import { verificationBuilder, openAttestationVerifiers } from "@worldcertscom/oa-verify";
 
 // creating your own verify using default exported verifiers
 const verify = verificationBuilder(openAttestationVerifiers); // this verify is equivalent to the one exported by the library
 const verify = verificationBuilder([openAttestationVerifiers[0], openAttestationVerifiers[1]]); // this verify only run 2 verifiers
 
 // creating your own verify using custom verifier
-import { verificationBuilder, openAttestationVerifiers, Verifier } from "@govtechsg/oa-verify";
+import { verificationBuilder, openAttestationVerifiers, Verifier } from "@worldcertscom/oa-verify";
 const customVerifier: Verifier = {
   skip: () => {
     // return a SkippedVerificationFragment if the verifier should be skipped or throw an error if it should always run
@@ -135,7 +133,7 @@ The function allow to specify as a second parameters the list of types on which 
 
 ```typescript
 import { documentRopstenValidWithCertificateStore } from "./test/fixtures/v2/documentRopstenValidWithCertificateStore";
-import { verify, isValid } from "@govtechsg/oa-verify";
+import { verify, isValid } from "@worldcertscom/oa-verify";
 
 const fragments = verify(documentRopstenValidWithCertificateStore, { network: "ropsten" });
 isValid(fragments); // display false because ISSUER_IDENTITY is INVALID
