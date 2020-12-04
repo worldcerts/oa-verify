@@ -1,5 +1,5 @@
 {
-  "name": "@govtechsg/oa-verify",
+  "name": "@worldcertscom/oa-verify",
   "version": "0.0.0-development",
   "description": "",
   "main": "dist/cjs/index.js",
