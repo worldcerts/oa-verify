@@ -25,7 +25,7 @@ const resolveIssuerIdentity = async (
     record =>
       record.addr.toLowerCase() === smartContractAddress.toLowerCase() &&
       record.netId === utils.getNetwork(options.network).chainId.toString(10) &&
-      record.type === "openatts" &&
+      record.type === "worldatts" &&
       record.net === "ethereum"
   );
   return matchingRecord
