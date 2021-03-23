@@ -1,5 +1,5 @@
 import { v2, v3, WrappedDocument, getData, utils } from "@govtechsg/open-attestation";
-import { getDnsDidRecords } from "@govtechsg/dnsprove";
+import { getDnsDidRecords } from "@worldcertscom/dnsprove";
 import { VerificationFragmentType, Verifier } from "../../../types/core";
 import { OpenAttestationDnsDidCode } from "../../../types/error";
 import { withCodedErrorHandler } from "../../../common/errorHandler";
