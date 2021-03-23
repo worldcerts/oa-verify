@@ -1,10 +1,7 @@
 import { SignedWrappedDocument, v2, v3, WrappedDocument } from "@govtechsg/open-attestation";
+import { Resolver } from "did-resolver";
 import { providers } from "ethers";
 import { Reason } from "./error";
-
-type DeepPartial<T> = {
-  [P in keyof T]?: DeepPartial<T[P]>;
-};
 
 /**
  * Callback function that will provide back the promises resolving to the verification fragment. It will be called before the promises are all resolved and thus give the possibility to consumers to perform their own extra checks.
@@ -13,16 +10,19 @@ export type PromiseCallback = (promises: Promise<VerificationFragment>[]) => voi
 
 export interface VerificationBuilderOptionsWithProvider {
   provider: providers.Provider;
+  resolver?: Resolver;
 }
 
 export interface VerificationBuilderOptionsWithNetwork {
   network: string;
+  resolver?: Resolver;
 }
 
 export type VerificationBuilderOptions = VerificationBuilderOptionsWithProvider | VerificationBuilderOptionsWithNetwork;
 
 export interface VerifierOptions {
   provider: providers.Provider;
+  resolver?: Resolver;
 }
 
 /**
@@ -69,7 +69,7 @@ export interface Verifier<
   Data = any
 > {
   skip: (document: Document, options: Options) => Promise<SkippedVerificationFragment>;
-  test: (document: DeepPartial<Document>, options: Options) => boolean;
+  test: (document: Document, options: Options) => boolean;
   verify: (document: Document, options: Options) => Promise<VerificationFragment<Data>>;
 }
 export type Hash = string;
