@@ -1,6 +1,6 @@
 {
   "name": "@worldcertscom/oa-verify",
-  "version": "7.0.2",
+  "version": "7.4.4",
   "description": "",
   "main": "dist/cjs/index.js",
   "module": "dist/esm/index.js",
