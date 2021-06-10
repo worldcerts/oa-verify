@@ -1,49 +1,60 @@
-import { PublicKey } from "did-resolver";
+import { VerificationMethod, Resolver } from "did-resolver";
 import { utils } from "ethers";
-import { Proof, v2 } from "@govtechsg/open-attestation";
-import { getPublicKey } from "./resolver";
+import { Literal, Record, Static, String, Union, Array as RunTypesArray } from "runtypes";
+import { getVerificationMethod } from "./resolver";
 import { Reason, OpenAttestationSignatureCode } from "../types/error";
 import { CodedError } from "../common/error";
 
-export interface ValidDidVerificationStatus {
-  verified: true;
-  did: string;
-}
+export const ValidDidVerificationStatus = Record({
+  verified: Literal(true),
+  did: String,
+});
+export type ValidDidVerificationStatus = Static<typeof ValidDidVerificationStatus>;
+export const ValidDidVerificationStatusArray = RunTypesArray(ValidDidVerificationStatus).withConstraint(
+  (elements) => elements.length > 0 || "Expect at least one valid element"
+);
+export type ValidDidVerificationStatusArray = Static<typeof ValidDidVerificationStatusArray>;
 
-export interface InvalidDidVerificationStatus {
-  verified: false;
-  did: string;
-  reason: Reason;
-}
+export const InvalidDidVerificationStatus = Record({
+  verified: Literal(false),
+  did: String,
+  reason: Reason,
+});
+export type InvalidDidVerificationStatus = Static<typeof InvalidDidVerificationStatus>;
 
-export type DidVerificationStatus = ValidDidVerificationStatus | InvalidDidVerificationStatus;
+export const DidVerificationStatus = Union(ValidDidVerificationStatus, InvalidDidVerificationStatus);
+export type DidVerificationStatus = Static<typeof DidVerificationStatus>;
+export const DidVerificationStatusArray = RunTypesArray(DidVerificationStatus);
+export type DidVerificationStatusArray = Static<typeof DidVerificationStatusArray>;
 
 interface VerifySignature {
   did: string;
   signature: string;
   merkleRoot: string;
-  publicKey: PublicKey;
+  verificationMethod: VerificationMethod;
 }
 
 export const verifySecp256k1VerificationKey2018 = ({
   did,
-  publicKey,
+  verificationMethod,
   merkleRoot,
   signature,
 }: VerifySignature): DidVerificationStatus => {
   const messageBytes = utils.arrayify(merkleRoot);
-  const { ethereumAddress } = publicKey;
-  if (!ethereumAddress) {
+  const { blockchainAccountId } = verificationMethod;
+  if (!blockchainAccountId) {
     return {
       did,
       verified: false,
       reason: {
         code: OpenAttestationSignatureCode.KEY_MISSING,
         codeString: OpenAttestationSignatureCode[OpenAttestationSignatureCode.KEY_MISSING],
-        message: `ethereumAddress not found on public key ${JSON.stringify(publicKey)}`,
+        message: `ethereumAddress not found on public key ${JSON.stringify(verificationMethod)}`,
       },
     };
   }
+  // blockchainAccountId looks like 0x0cE1854a3836daF9130028Cf90D6d35B1Ae46457@eip155:3, let's get rid of the part after @, @ included
+  const ethereumAddress = blockchainAccountId.split("@")[0];
 
   const merkleRootSigned = utils.verifyMessage(messageBytes, signature).toLowerCase() === ethereumAddress.toLowerCase();
   if (!merkleRootSigned) {
@@ -65,51 +76,36 @@ export const verifySecp256k1VerificationKey2018 = ({
 };
 
 export const verifySignature = async ({
+  key,
   merkleRoot,
-  identityProof,
-  proof,
+  signature,
   did,
+  resolver,
 }: {
+  key: string;
   merkleRoot: string;
-  identityProof?: v2.IdentityProof;
-  proof: Proof[];
-  did?: string;
+  did: string;
+  signature: string;
+  resolver?: Resolver;
 }): Promise<DidVerificationStatus> => {
-  if (!identityProof?.key)
-    throw new CodedError(
-      "Key is not present",
-      OpenAttestationSignatureCode.MALFORMED_IDENTITY_PROOF,
-      "MALFORMED_IDENTITY_PROOF"
-    );
-  if (!did) throw new CodedError("DID is not present", OpenAttestationSignatureCode.DID_MISSING, "DID_MISSING");
-  const { key } = identityProof;
-  const publicKey = await getPublicKey(did, key);
-  if (!publicKey)
+  const verificationMethod = await getVerificationMethod(did, key, resolver);
+  if (!verificationMethod)
     throw new CodedError(
       `No public key found on DID document for the DID ${did} and key ${key}`,
       OpenAttestationSignatureCode.KEY_NOT_IN_DID,
       "KEY_NOT_IN_DID"
     );
-
-  const correspondingProof = proof.find((p) => p.verificationMethod.toLowerCase() === key.toLowerCase());
-  if (!correspondingProof)
-    throw new CodedError(
-      `Proof not found for ${key}`,
-      OpenAttestationSignatureCode.CORRESPONDING_PROOF_MISSING,
-      "CORRESPONDING_PROOF_MISSING"
-    );
-
-  switch (publicKey.type) {
-    case "Secp256k1VerificationKey2018":
+  switch (verificationMethod.type) {
+    case "EcdsaSecp256k1RecoveryMethod2020":
       return verifySecp256k1VerificationKey2018({
         did,
-        publicKey,
+        verificationMethod,
         merkleRoot,
-        signature: correspondingProof.signature,
+        signature,
       });
     default:
       throw new CodedError(
-        `Signature type ${publicKey.type} is currently not support`,
+        `Signature type ${verificationMethod.type} is currently not support`,
         OpenAttestationSignatureCode.UNSUPPORTED_KEY_TYPE,
         "UNSUPPORTED_KEY_TYPE"
       );

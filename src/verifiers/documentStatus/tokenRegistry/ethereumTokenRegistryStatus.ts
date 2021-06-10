@@ -2,22 +2,16 @@ import { getData, utils, v2, v3, WrappedDocument } from "@govtechsg/open-attesta
 import { TradeTrustErc721Factory } from "@govtechsg/token-registry";
 import { constants, errors, providers } from "ethers";
 import { VerificationFragmentType, Verifier } from "../../../types/core";
-import { OpenAttestationEthereumTokenRegistryStatusCode, Reason } from "../../../types/error";
-import { withCodedErrorHandler } from "../../../common/errorHandler";
+import { OpenAttestationEthereumTokenRegistryStatusCode } from "../../../types/error";
 import { CodedError } from "../../../common/error";
+import { withCodedErrorHandler } from "../../../common/errorHandler";
+import {
+  InvalidTokenRegistryStatus,
+  OpenAttestationEthereumTokenRegistryStatusFragment,
+  ValidTokenRegistryStatus,
+} from "./ethereumTokenRegistryStatus.type";
 
-interface ValidMintedStatus {
-  minted: true;
-  address: string;
-}
-
-interface InvalidMintedStatus {
-  minted: false;
-  address: string;
-  reason: Reason;
-}
-
-type MintedStatus = ValidMintedStatus | InvalidMintedStatus;
+type VerifierType = Verifier<OpenAttestationEthereumTokenRegistryStatusFragment>;
 
 const name = "OpenAttestationEthereumTokenRegistryStatus";
 const type: VerificationFragmentType = "DOCUMENT_STATUS";
@@ -42,22 +36,41 @@ export const getTokenRegistry = (
         ]
       );
     return issuers[0].tokenRegistry;
-  } else {
-    const { proof } = getData(document);
-    if (proof.method !== "TOKEN_REGISTRY")
+  }
+
+  if (utils.isWrappedV3Document(document)) {
+    if (!document.openAttestationMetadata.proof.value)
       throw new CodedError(
-        "Cannot validate non-token registry documents",
-        OpenAttestationEthereumTokenRegistryStatusCode.INVALID_VALIDATION_METHOD,
+        "Token registry is undefined",
+        OpenAttestationEthereumTokenRegistryStatusCode.UNDEFINED_TOKEN_REGISTRY,
         OpenAttestationEthereumTokenRegistryStatusCode[
-          OpenAttestationEthereumTokenRegistryStatusCode.INVALID_VALIDATION_METHOD
+          OpenAttestationEthereumTokenRegistryStatusCode.UNDEFINED_TOKEN_REGISTRY
         ]
       );
-    return proof.value;
+    return document.openAttestationMetadata.proof.value;
   }
+
+  throw new CodedError(
+    `Document does not match either v2 or v3 formats. Consider using \`utils.diagnose\` from open-attestation to find out more.`,
+    OpenAttestationEthereumTokenRegistryStatusCode.UNRECOGNIZED_DOCUMENT,
+    OpenAttestationEthereumTokenRegistryStatusCode[OpenAttestationEthereumTokenRegistryStatusCode.UNRECOGNIZED_DOCUMENT]
+  );
+};
+
+const getMerkleRoot = (
+  document: WrappedDocument<v2.OpenAttestationDocument> | WrappedDocument<v3.OpenAttestationDocument>
+): string => {
+  if (utils.isWrappedV2Document(document)) return `0x${document.signature.merkleRoot}`;
+  else if (utils.isWrappedV3Document(document)) return `0x${document.proof.merkleRoot}`;
+  throw new CodedError(
+    `Document does not match either v2 or v3 formats. Consider using \`utils.diagnose\` from open-attestation to find out more.`,
+    OpenAttestationEthereumTokenRegistryStatusCode.UNRECOGNIZED_DOCUMENT,
+    OpenAttestationEthereumTokenRegistryStatusCode[OpenAttestationEthereumTokenRegistryStatusCode.UNRECOGNIZED_DOCUMENT]
+  );
 };
 
 const isNonExistentToken = (error: any) => {
-  const message: string | undefined = error.body?.error?.message;
+  const message: string | undefined = error.message;
   if (!message) return false;
   return message.includes("owner query for nonexistent token");
 };
@@ -101,7 +114,7 @@ export const isTokenMintedOnRegistry = async ({
   tokenRegistry: string;
   merkleRoot: string;
   provider: providers.Provider;
-}): Promise<MintedStatus> => {
+}): Promise<ValidTokenRegistryStatus | InvalidTokenRegistryStatus> => {
   try {
     const tokenRegistryContract = await TradeTrustErc721Factory.connect(tokenRegistry, provider);
     const minted = await tokenRegistryContract.ownerOf(merkleRoot).then((owner) => !(owner === constants.AddressZero));
@@ -135,70 +148,90 @@ export const isTokenMintedOnRegistry = async ({
   }
 };
 
-export const openAttestationEthereumTokenRegistryStatus: Verifier<
-  WrappedDocument<v2.OpenAttestationDocument> | WrappedDocument<v3.OpenAttestationDocument>
-> = {
-  skip: () => {
-    return Promise.resolve({
-      status: "SKIPPED",
-      type,
-      name,
-      reason: {
-        code: OpenAttestationEthereumTokenRegistryStatusCode.SKIPPED,
-        codeString:
-          OpenAttestationEthereumTokenRegistryStatusCode[OpenAttestationEthereumTokenRegistryStatusCode.SKIPPED],
-        message: `Document issuers doesn't have "tokenRegistry" property or ${v3.Method.TokenRegistry} method`,
-      },
-    });
-  },
-  test: (document) => {
-    if (utils.isWrappedV3Document(document)) {
-      const documentData = getData(document);
-      return documentData.proof.method === v3.Method.TokenRegistry;
-    } else if (utils.isWrappedV2Document(document)) {
-      const documentData = getData(document);
-      return documentData?.issuers?.some((issuer) => "tokenRegistry" in issuer);
-    }
-    return false;
-  },
-  verify: withCodedErrorHandler(
-    async (document, options) => {
-      const tokenRegistry = getTokenRegistry(document);
-      const merkleRoot = `0x${document.signature.merkleRoot}`;
-      const mintStatus = await isTokenMintedOnRegistry({ tokenRegistry, merkleRoot, provider: options.provider });
-
-      const status: MintedStatus = mintStatus.minted
-        ? {
-            minted: true,
-            address: tokenRegistry,
-          }
-        : {
-            minted: false,
-            address: tokenRegistry,
-            reason: mintStatus.reason,
-          };
-
-      return mintStatus.minted
-        ? {
-            name,
-            type,
-            data: { mintedOnAll: true, details: utils.isWrappedV3Document(document) ? status : [status] },
-            status: "VALID",
-          }
-        : {
-            name,
-            type,
-            data: { mintedOnAll: false, details: utils.isWrappedV3Document(document) ? status : [status] },
-            reason: mintStatus.reason,
-            status: "INVALID",
-          };
+const skip: VerifierType["skip"] = async () => {
+  return {
+    status: "SKIPPED",
+    type,
+    name,
+    reason: {
+      code: OpenAttestationEthereumTokenRegistryStatusCode.SKIPPED,
+      codeString:
+        OpenAttestationEthereumTokenRegistryStatusCode[OpenAttestationEthereumTokenRegistryStatusCode.SKIPPED],
+      message: `Document issuers doesn't have "tokenRegistry" property or ${v3.Method.TokenRegistry} method`,
     },
-    {
+  };
+};
+
+const test: VerifierType["test"] = (document) => {
+  if (utils.isWrappedV2Document(document)) {
+    const documentData = getData(document);
+    return documentData.issuers.some((issuer) => "tokenRegistry" in issuer);
+  } else if (utils.isWrappedV3Document(document)) {
+    return document.openAttestationMetadata.proof.method === v3.Method.TokenRegistry;
+  }
+  return false;
+};
+
+// TODO split
+const verify: VerifierType["verify"] = async (document, options) => {
+  if (!utils.isWrappedV3Document(document) && !utils.isWrappedV2Document(document))
+    throw new CodedError(
+      `Document does not match either v2 or v3 formats. Consider using \`utils.diagnose\` from open-attestation to find out more.`,
+      OpenAttestationEthereumTokenRegistryStatusCode.UNRECOGNIZED_DOCUMENT,
+      OpenAttestationEthereumTokenRegistryStatusCode[
+        OpenAttestationEthereumTokenRegistryStatusCode.UNRECOGNIZED_DOCUMENT
+      ]
+    );
+  const tokenRegistry = getTokenRegistry(document);
+  const merkleRoot = getMerkleRoot(document);
+  const mintStatus = await isTokenMintedOnRegistry({ tokenRegistry, merkleRoot, provider: options.provider });
+
+  if (ValidTokenRegistryStatus.guard(mintStatus)) {
+    const fragment = {
       name,
       type,
-      unexpectedErrorCode: OpenAttestationEthereumTokenRegistryStatusCode.UNEXPECTED_ERROR,
-      unexpectedErrorString:
-        OpenAttestationEthereumTokenRegistryStatusCode[OpenAttestationEthereumTokenRegistryStatusCode.UNEXPECTED_ERROR],
+      status: "VALID" as const,
+    };
+    if (utils.isWrappedV3Document(document)) {
+      return {
+        ...fragment,
+        data: { mintedOnAll: true, details: mintStatus },
+      };
+    } else {
+      return {
+        ...fragment,
+        data: { mintedOnAll: true, details: [mintStatus] },
+      };
     }
-  ),
+  } else {
+    const fragment = {
+      name,
+      type,
+      reason: mintStatus.reason,
+      status: "INVALID" as const,
+    };
+    if (utils.isWrappedV3Document(document)) {
+      return {
+        ...fragment,
+        data: { mintedOnAll: false, details: mintStatus },
+      };
+    } else {
+      return {
+        ...fragment,
+        data: { mintedOnAll: false, details: [mintStatus] },
+      };
+    }
+  }
+};
+
+export const openAttestationEthereumTokenRegistryStatus: Verifier<OpenAttestationEthereumTokenRegistryStatusFragment> = {
+  skip,
+  test,
+  verify: withCodedErrorHandler(verify, {
+    name,
+    type,
+    unexpectedErrorCode: OpenAttestationEthereumTokenRegistryStatusCode.UNEXPECTED_ERROR,
+    unexpectedErrorString:
+      OpenAttestationEthereumTokenRegistryStatusCode[OpenAttestationEthereumTokenRegistryStatusCode.UNEXPECTED_ERROR],
+  }),
 };

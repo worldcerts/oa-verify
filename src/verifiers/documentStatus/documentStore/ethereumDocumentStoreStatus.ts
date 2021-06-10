@@ -1,109 +1,37 @@
-import { utils, getData, v2, v3, WrappedDocument } from "@govtechsg/open-attestation";
-import { errors, providers } from "ethers";
+import { getData, utils, v2, v3, WrappedDocument } from "@govtechsg/open-attestation";
+import { providers } from "ethers";
 import { DocumentStoreFactory } from "@govtechsg/document-store";
-import { DocumentStore } from "@govtechsg/document-store/src/contracts/DocumentStore";
-import { Hash, VerificationFragmentType, VerificationFragment, Verifier } from "../../../types/core";
+import { VerificationFragmentType, Verifier, VerifierOptions } from "../../../types/core";
 import { OpenAttestationEthereumDocumentStoreStatusCode, Reason } from "../../../types/error";
 import { CodedError } from "../../../common/error";
 import { withCodedErrorHandler } from "../../../common/errorHandler";
-
-interface ValidIssuanceStatus {
-  issued: true;
-  address: string;
-}
-
-interface InvalidIssuanceStatus {
-  issued: false;
-  address: string;
-  reason: Reason;
-}
-
-type IssuanceStatus = ValidIssuanceStatus | InvalidIssuanceStatus;
-
-interface ValidRevocationStatus {
-  revoked: false;
-  address: string;
-}
-
-interface InvalidRevocationStatus {
-  revoked: true;
-  address: string;
-  reason: Reason;
-}
-
-type RevocationStatus = ValidRevocationStatus | InvalidRevocationStatus;
-
-export interface DocumentStoreStatusFragment {
-  issuedOnAll: boolean;
-  revokedOnAny?: boolean;
-  details: {
-    issuance: IssuanceStatus | IssuanceStatus[];
-    revocation?: RevocationStatus | RevocationStatus[];
-  };
-}
+import { decodeError, isRevokedOnDocumentStore } from "../utils";
+import { InvalidRevocationStatus, RevocationStatus, ValidRevocationStatusArray } from "../revocation.types";
+import {
+  DocumentStoreIssuanceStatus,
+  InvalidDocumentStoreIssuanceStatus,
+  OpenAttestationEthereumDocumentStoreStatusFragment,
+  ValidDocumentStoreDataV3,
+  ValidDocumentStoreIssuanceStatusArray,
+} from "./ethereumDocumentStoreStatus.type";
 
 const name = "OpenAttestationEthereumDocumentStoreStatus";
 const type: VerificationFragmentType = "DOCUMENT_STATUS";
+type VerifierType = Verifier<OpenAttestationEthereumDocumentStoreStatusFragment>;
 
 // Returns list of all document stores, throws when not all issuers are using document store
-export const getIssuersDocumentStores = (
-  document: WrappedDocument<v2.OpenAttestationDocument> | WrappedDocument<v3.OpenAttestationDocument>
-): string[] => {
-  if (utils.isWrappedV2Document(document)) {
-    const data = getData(document);
-    return data.issuers.map((issuer) => {
-      const documentStoreAddress = issuer.documentStore || issuer.certificateStore;
-      if (!documentStoreAddress)
-        throw new CodedError(
-          `Document store address not found in issuer ${issuer.name}`,
-          OpenAttestationEthereumDocumentStoreStatusCode.INVALID_ISSUERS,
-          OpenAttestationEthereumDocumentStoreStatusCode[OpenAttestationEthereumDocumentStoreStatusCode.INVALID_ISSUERS]
-        );
-      return documentStoreAddress;
-    });
-  }
-  const { proof } = getData(document);
-  if (proof.method !== "DOCUMENT_STORE")
-    throw new CodedError(
-      `Document not issued using document store`,
-      OpenAttestationEthereumDocumentStoreStatusCode.INVALID_VALIDATION_METHOD,
-      OpenAttestationEthereumDocumentStoreStatusCode[
-        OpenAttestationEthereumDocumentStoreStatusCode.INVALID_VALIDATION_METHOD
-      ]
-    );
-  return [proof.value];
-};
-
-export const decodeError = (error: any) => {
-  // Try to decode the error to see if we can deterministically tell if the document has NOT been issued or revoked
-  // In case where we cannot tell, we throw an error
-  const reason = error.reason && Array.isArray(error.reason) ? error.reason[0] : error.reason ?? "";
-  switch (true) {
-    case !error.reason &&
-      (error.method?.toLowerCase() === "isRevoked(bytes32)".toLowerCase() ||
-        error.method?.toLowerCase() === "isIssued(bytes32)".toLowerCase()) &&
-      error.code === errors.CALL_EXCEPTION:
-      return "Contract is not found";
-    case reason.toLowerCase() === "ENS name not configured".toLowerCase() &&
-      error.code === errors.UNSUPPORTED_OPERATION:
-      return "ENS name is not configured";
-    case reason.toLowerCase() === "bad address checksum".toLowerCase() && error.code === errors.INVALID_ARGUMENT:
-      return "Bad document store address checksum";
-    case error.message?.toLowerCase() === "name not found".toLowerCase():
-      return "ENS name is not found";
-    case reason.toLowerCase() === "invalid address".toLowerCase() && error.code === errors.INVALID_ARGUMENT:
-      return "Invalid document store address";
-    case error.code === errors.INVALID_ARGUMENT:
-      return "Invalid call arguments";
-    case error.code === errors.SERVER_ERROR:
+export const getIssuersDocumentStores = (document: WrappedDocument<v2.OpenAttestationDocument>): string[] => {
+  const data = getData(document);
+  return data.issuers.map((issuer) => {
+    const documentStoreAddress = issuer.documentStore || issuer.certificateStore;
+    if (!documentStoreAddress)
       throw new CodedError(
-        "Unable to connect to the Ethereum network, please try again later",
-        OpenAttestationEthereumDocumentStoreStatusCode.SERVER_ERROR,
-        OpenAttestationEthereumDocumentStoreStatusCode[OpenAttestationEthereumDocumentStoreStatusCode.SERVER_ERROR]
+        `Document store address not found in issuer ${issuer.name}`,
+        OpenAttestationEthereumDocumentStoreStatusCode.INVALID_ISSUERS,
+        OpenAttestationEthereumDocumentStoreStatusCode[OpenAttestationEthereumDocumentStoreStatusCode.INVALID_ISSUERS]
       );
-    default:
-      throw error;
-  }
+    return documentStoreAddress;
+  });
 };
 
 export const isIssuedOnDocumentStore = async ({
@@ -114,11 +42,10 @@ export const isIssuedOnDocumentStore = async ({
   documentStore: string;
   merkleRoot: string;
   provider: providers.Provider;
-}): Promise<IssuanceStatus> => {
+}): Promise<DocumentStoreIssuanceStatus> => {
   try {
     const documentStoreContract = await DocumentStoreFactory.connect(documentStore, provider);
     const issued = await documentStoreContract.isIssued(merkleRoot);
-
     return issued
       ? {
           issued: true,
@@ -154,171 +81,180 @@ export const isIssuedOnDocumentStore = async ({
   }
 };
 
-const getIntermediateHashes = (targetHash: Hash, proofs: Hash[] = []) => {
-  const hashes = [`0x${targetHash}`];
-  proofs.reduce((prev, curr) => {
-    const next = utils.combineHashString(prev, curr);
-    hashes.push(`0x${next}`);
-    return next;
-  }, targetHash);
-  return hashes;
+const skip: VerifierType["skip"] = async () => {
+  return {
+    status: "SKIPPED",
+    type,
+    name,
+    reason: {
+      code: OpenAttestationEthereumDocumentStoreStatusCode.SKIPPED,
+      codeString:
+        OpenAttestationEthereumDocumentStoreStatusCode[OpenAttestationEthereumDocumentStoreStatusCode.SKIPPED],
+      message: `Document issuers doesn't have "documentStore" or "certificateStore" property or ${v3.Method.DocumentStore} method`,
+    },
+  };
 };
 
-// Given a list of hashes, check against one smart contract if any of the hash has been revoked
-export const isAnyHashRevoked = async (smartContract: DocumentStore, intermediateHashes: Hash[]) => {
-  const revokedStatusDeferred = intermediateHashes.map((hash) =>
-    smartContract.isRevoked(hash).then((status) => (status ? hash : undefined))
+const test: VerifierType["test"] = (document) => {
+  if (utils.isWrappedV2Document(document)) {
+    const documentData = getData(document);
+    return documentData.issuers.some((issuer) => "documentStore" in issuer || "certificateStore" in issuer);
+  } else if (utils.isWrappedV3Document(document)) {
+    return document.openAttestationMetadata.proof.method === v3.Method.DocumentStore;
+  }
+  return false;
+};
+
+const verifyV2 = async (
+  document: WrappedDocument<v2.OpenAttestationDocument>,
+  options: VerifierOptions
+): Promise<OpenAttestationEthereumDocumentStoreStatusFragment> => {
+  const documentStores = getIssuersDocumentStores(document);
+  const merkleRoot = `0x${document.signature.merkleRoot}`;
+  const { targetHash } = document.signature;
+  const proofs = document.signature.proof || [];
+  const issuanceStatuses = await Promise.all(
+    documentStores.map((documentStore) =>
+      isIssuedOnDocumentStore({ documentStore, merkleRoot, provider: options.provider })
+    )
   );
-  const revokedStatuses = await Promise.all(revokedStatusDeferred);
-  return revokedStatuses.find((hash) => hash);
-};
-
-export const isRevokedOnDocumentStore = async ({
-  documentStore,
-  merkleRoot,
-  provider,
-  targetHash,
-  proofs,
-}: {
-  documentStore: string;
-  merkleRoot: string;
-  provider: providers.Provider;
-  targetHash: Hash;
-  proofs?: Hash[];
-}): Promise<RevocationStatus> => {
-  try {
-    const documentStoreContract = await DocumentStoreFactory.connect(documentStore, provider);
-    const intermediateHashes = getIntermediateHashes(targetHash, proofs);
-    const revokedHash = await isAnyHashRevoked(documentStoreContract, intermediateHashes);
-
-    return revokedHash
-      ? {
-          revoked: true,
-          address: documentStore,
-          reason: {
-            message: `Document ${merkleRoot} has been revoked under contract ${documentStore}`,
-            code: OpenAttestationEthereumDocumentStoreStatusCode.DOCUMENT_REVOKED,
-            codeString:
-              OpenAttestationEthereumDocumentStoreStatusCode[
-                OpenAttestationEthereumDocumentStoreStatusCode.DOCUMENT_REVOKED
-              ],
-          },
-        }
-      : {
-          revoked: false,
-          address: documentStore,
-        };
-  } catch (error) {
-    // If error can be decoded and it's because of document is not issued, we return false
-    // Else allow error to continue to bubble up
+  const notIssued = issuanceStatuses.find(InvalidDocumentStoreIssuanceStatus.guard);
+  if (InvalidDocumentStoreIssuanceStatus.guard(notIssued)) {
     return {
-      revoked: true,
-      address: documentStore,
-      reason: {
-        message: decodeError(error),
-        code: OpenAttestationEthereumDocumentStoreStatusCode.DOCUMENT_REVOKED,
-        codeString:
-          OpenAttestationEthereumDocumentStoreStatusCode[
-            OpenAttestationEthereumDocumentStoreStatusCode.DOCUMENT_REVOKED
-          ],
+      name,
+      type,
+      data: {
+        issuedOnAll: false,
+        details: { issuance: issuanceStatuses },
       },
+      reason: notIssued.reason,
+      status: "INVALID",
     };
   }
-};
 
-const isWrappedV2Document = (document: any): document is WrappedDocument<v2.OpenAttestationDocument> => {
-  return document.data && document.data.issuers;
-};
-export const openAttestationEthereumDocumentStoreStatus: Verifier<
-  WrappedDocument<v2.OpenAttestationDocument> | WrappedDocument<v3.OpenAttestationDocument>
-> = {
-  skip: () => {
-    return Promise.resolve({
-      status: "SKIPPED",
-      type,
+  const revocationStatuses: RevocationStatus[] = await Promise.all(
+    documentStores.map((documentStore) =>
+      isRevokedOnDocumentStore({
+        documentStore,
+        merkleRoot,
+        targetHash,
+        proofs,
+        provider: options.provider,
+      })
+    )
+  );
+  const revoked = revocationStatuses.find(InvalidRevocationStatus.guard);
+
+  if (InvalidRevocationStatus.guard(revoked)) {
+    return {
       name,
-      reason: {
-        code: OpenAttestationEthereumDocumentStoreStatusCode.SKIPPED,
-        codeString:
-          OpenAttestationEthereumDocumentStoreStatusCode[OpenAttestationEthereumDocumentStoreStatusCode.SKIPPED],
-        message: `Document issuers doesn't have "documentStore" or "certificateStore" property or ${v3.Method.DocumentStore} method`,
+      type,
+      data: {
+        issuedOnAll: true,
+        revokedOnAny: true,
+        details: { issuance: issuanceStatuses, revocation: revocationStatuses },
       },
-    });
-  },
-  test: (document) => {
-    if (utils.isWrappedV3Document(document)) {
-      const documentData = getData(document);
-      return documentData.proof.method === v3.Method.DocumentStore;
-    } else if (isWrappedV2Document(document)) {
-      const documentData = getData(document);
-      return documentData.issuers.some((issuer) => "documentStore" in issuer || "certificateStore" in issuer);
-    }
-    return false;
-  },
-  verify: withCodedErrorHandler(
-    async (document, options): Promise<VerificationFragment<DocumentStoreStatusFragment>> => {
-      const documentStores = getIssuersDocumentStores(document);
-      const merkleRoot = `0x${document.signature.merkleRoot}`;
-      const { targetHash } = document.signature;
-      const proofs = document.signature.proof || [];
+      reason: revoked.reason,
+      status: "INVALID",
+    };
+  }
 
-      const issuanceStatuses: IssuanceStatus[] = await Promise.all(
-        documentStores.map((documentStore) =>
-          isIssuedOnDocumentStore({ documentStore, merkleRoot, provider: options.provider })
-        )
-      );
-      const notIssued = issuanceStatuses.find((status): status is InvalidIssuanceStatus => !status.issued);
-      const issuedOnAll = !notIssued;
-      if (notIssued) {
-        return {
-          name,
-          type,
-          data: {
-            issuedOnAll,
-            details: utils.isWrappedV3Document(document)
-              ? { issuance: issuanceStatuses[0] }
-              : { issuance: issuanceStatuses },
-          },
-          reason: notIssued.reason,
-          status: "INVALID",
-        };
-      }
-
-      const revocationStatuses: RevocationStatus[] = await Promise.all(
-        documentStores.map((documentStore) =>
-          isRevokedOnDocumentStore({
-            documentStore,
-            merkleRoot,
-            targetHash,
-            proofs,
-            provider: options.provider,
-          })
-        )
-      );
-      const revoked = revocationStatuses.find((status): status is InvalidRevocationStatus => status.revoked);
-
-      return {
-        name,
-        type,
-        data: {
-          issuedOnAll,
-          revokedOnAny: !!revoked,
-          details: utils.isWrappedV3Document(document)
-            ? { issuance: issuanceStatuses[0], revocation: revocationStatuses[0] }
-            : { issuance: issuanceStatuses, revocation: revocationStatuses },
-        },
-        ...(revoked && {
-          reason: revoked.reason,
-        }),
-        status: revoked ? "INVALID" : "VALID",
-      };
-    },
-    {
+  if (
+    ValidDocumentStoreIssuanceStatusArray.guard(issuanceStatuses) &&
+    ValidRevocationStatusArray.guard(revocationStatuses)
+  ) {
+    return {
       name,
       type,
-      unexpectedErrorCode: OpenAttestationEthereumDocumentStoreStatusCode.UNEXPECTED_ERROR,
-      unexpectedErrorString:
-        OpenAttestationEthereumDocumentStoreStatusCode[OpenAttestationEthereumDocumentStoreStatusCode.UNEXPECTED_ERROR],
-    }
-  ),
+      data: {
+        issuedOnAll: true,
+        revokedOnAny: false,
+        details: { issuance: issuanceStatuses, revocation: revocationStatuses },
+      },
+      status: "VALID",
+    };
+  }
+  throw new CodedError(
+    "Reached an unexpected state when verifying v2 document",
+    OpenAttestationEthereumDocumentStoreStatusCode.UNEXPECTED_ERROR,
+    "UNEXPECTED_ERROR"
+  );
+};
+
+const verifyV3 = async (
+  document: WrappedDocument<v3.OpenAttestationDocument>,
+  options: VerifierOptions
+): Promise<OpenAttestationEthereumDocumentStoreStatusFragment> => {
+  const { merkleRoot: merkleRootRaw, targetHash, proofs } = document.proof;
+  const merkleRoot = `0x${merkleRootRaw}`;
+  const { value: documentStore } = document.openAttestationMetadata.proof;
+
+  const issuance = await isIssuedOnDocumentStore({ documentStore, merkleRoot, provider: options.provider });
+  const revocation = await isRevokedOnDocumentStore({
+    documentStore,
+    merkleRoot,
+    targetHash,
+    proofs,
+    provider: options.provider,
+  });
+  const data = {
+    issuedOnAll: issuance.issued,
+    revokedOnAny: revocation.revoked,
+    details: {
+      issuance,
+      revocation,
+    },
+  };
+
+  if (ValidDocumentStoreDataV3.guard(data)) {
+    return {
+      name,
+      type,
+      data,
+      status: "VALID",
+    };
+  }
+
+  let reason: Reason | undefined;
+  if (InvalidRevocationStatus.guard(revocation)) {
+    reason = revocation.reason;
+  } else if (InvalidDocumentStoreIssuanceStatus.guard(issuance)) {
+    reason = issuance.reason;
+  }
+  if (!reason) {
+    throw new CodedError(
+      "Unable to retrieve the reason of the failure",
+      OpenAttestationEthereumDocumentStoreStatusCode.UNEXPECTED_ERROR,
+      "UNEXPECTED_ERROR"
+    );
+  }
+  return {
+    name,
+    type,
+    data,
+    status: "INVALID",
+    reason,
+  };
+};
+
+const verify: VerifierType["verify"] = async (document, options) => {
+  if (utils.isWrappedV2Document(document)) return verifyV2(document, options);
+  else if (utils.isWrappedV3Document(document)) return verifyV3(document, options);
+  throw new CodedError(
+    `Document does not match either v2 or v3 formats. Consider using \`utils.diagnose\` from open-attestation to find out more.`,
+    OpenAttestationEthereumDocumentStoreStatusCode.UNRECOGNIZED_DOCUMENT,
+    OpenAttestationEthereumDocumentStoreStatusCode[OpenAttestationEthereumDocumentStoreStatusCode.UNRECOGNIZED_DOCUMENT]
+  );
+};
+
+export const openAttestationEthereumDocumentStoreStatus: VerifierType = {
+  skip,
+  test,
+  verify: withCodedErrorHandler(verify, {
+    name,
+    type,
+    unexpectedErrorCode: OpenAttestationEthereumDocumentStoreStatusCode.UNEXPECTED_ERROR,
+    unexpectedErrorString:
+      OpenAttestationEthereumDocumentStoreStatusCode[OpenAttestationEthereumDocumentStoreStatusCode.UNEXPECTED_ERROR],
+  }),
 };
